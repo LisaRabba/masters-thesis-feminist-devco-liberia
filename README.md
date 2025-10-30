@@ -13,7 +13,7 @@ masters-thesis-feminist-devco-liberia/
 
 ├── Code/               
 │   ├── 01_Development_Cooperation_Data.Rmd # cleans and analyzes IATI data on development cooperation in Liberia
-│   ├── 02_DHS_Data_Analysis.Rmd # cleans and analyzes DHS
+│   ├── 02_DHS_Data_Analysis.Rmd # analysis of DHS data with an additional treatment variable based on the first part of the analysis
 ├── Graphs and Tables/
 
 ```
