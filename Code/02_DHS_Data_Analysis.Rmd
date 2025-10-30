@@ -1,0 +1,769 @@
+---
+title: "02 DHS Data Analysis"
+author: "Lisa Rabba"
+date: "2025-10-30"
+output:
+  html_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, results = 'hide', fig.show='hide', message=FALSE, warning=FALSE)
+```
+
+### Load Packages
+
+```{r}
+pacman::p_load(tidyverse, haven, writexl, table1, gtsummary, car, labelled, ggplot2, knitr, kableExtra, gt, htmlwidgets, formattable, sf, patchwork, sjPlot, viridis, ggrepel, survey, tableone, marginaleffects, magick, svrep,srvyr, flextable)
+
+#Function that provides an overview of variable names in a dataset
+makeVlist <- function(x) {
+  labels <- sapply(x, function(x) attr(x, "label"))
+  tibble(name = names(labels), label = labels)
+}
+```
+
+
+
+# DHS
+
+#### Load DHS 2013 data (individual recode) and create list of variables
+
+```{r}
+dhs_2013 <- read_dta("../Data/LB_2013_DHS_02132025_116_220630/LBIR6ADT/LBIR6AFL.DTA")
+
+Var_Lab_2013 <- makeVlist(dhs_2013)
+```
+
+#### Load DHS 2019 data (individual recode) and create list of variables
+
+```{r}
+#DHS 2019-20 Individual Recode
+dhs_2019 <- read_dta("../Data/LB_2019-20_DHS_02072025_1614_220630/LBIR7ADT/LBIR7AFL.DTA")
+
+Var_Lab_2019 <- makeVlist(dhs_2019)
+```
+
+#### Recode the 2019 stratum variable v022 so that it matches the 2013 version (based on a ChatGPT draft)
+
+```{r}
+mapping <- c(
+  "bomi urban"             = 1,
+  "bomi rural"             = 2,
+  "bong urban"             = 3,
+  "bong rural"             = 4,
+  "gbarpolu urban"         = 5,
+  "gbarpolu rural"         = 6,
+  "grand bassa urban"      = 7,
+  "grand bassa rural"      = 8,
+  "grand cape mount urban" = 9,
+  "grand cape mount rural" = 10,
+  "grand gedeh urban"      = 11,
+  "grand gedeh rural"      = 12,
+  "grand kru urban"        = 13,
+  "grand kru rural"        = 14,
+  "lofa urban"             = 15,
+  "lofa rural"             = 16,
+  "margibi urban"          = 17,
+  "margibi rural"          = 18,
+  "maryland urban"         = 19,
+  "maryland rural"         = 20,
+  "montserrado urban"      = 21,
+  "montserrado rural"      = 22,
+  "nimba urban"            = 23,
+  "nimba rural"            = 24,
+  "river cess urban"       = 25,
+  "river cess rural"       = 26,
+  "river gee urban"        = 27,
+  "river gee rural"        = 28,
+  "sinoe urban"            = 29,
+  "sinoe rural"            = 30
+)
+
+# extract label names from the 2019 variable
+labels_2019 <- attr(dhs_2019$v022, "labels")
+labels_2019_names <- names(labels_2019)
+
+# create named vector for re-coding
+recode_vector <- setNames(mapping[labels_2019_names], labels_2019)
+
+# new variable
+dhs_2019$v022 <- recode(as.numeric(dhs_2019$v022), !!!recode_vector)
+```
+
+### Select relevant variables and join the two datasets with a new variable indicating the year
+
+```{r}
+dhs_2013_small <- dhs_2013 %>%
+  select(v744a, v744b, v744c, v744d, v744e, v106, v190,v191,v012, scounty, v025, v024, v501, v021, v022, v005) %>%
+  mutate(year = 2013,
+         county_name = as.character(as_factor(scounty)))
+
+dhs_2019_small <- dhs_2019 %>%
+  select(v744a, v744b, v744c, v744d, v744e, v106, v190,v191,v012, scountyc, v025, v024, v501, v021, v022, v005) %>%
+  mutate(year = 2019,
+         county_name = as.character(as_factor(scountyc)))
+
+dhs_joined <- bind_rows(dhs_2013_small, dhs_2019_small) %>% #Size of the raw sample: 17.304 observations
+  mutate(weight = v005 / 1000000) #weight for women
+
+Var_Lab_joined <- makeVlist(dhs_joined)
+```
+
+```{r NAs in relevant variables}
+sapply(dhs_joined, function(x) sum(is.na(x)))
+```
+
+### Clean relevant variables and create new variable that is 1 when a woman justifies wife beating for at least one reason and 0 otherwise (v744a-e)
+
+```{r}
+
+dhs_joined_treatment <- dhs_joined %>%
+  filter(
+    v744a <= 1, v744b <= 1, v744c <= 1, v744d <= 1, v744e <= 1,
+    !is.na(v106), !is.na(v190), !is.na(v191), !is.na(v012),
+    !is.na(county_name),
+    !county_name %in% c("grand bassa", "margibi", "montserrado") #Exclude Counties with decrease during treatment period
+  ) %>%
+  mutate(
+    # wave
+    time = factor(
+      ifelse(year == 2013, 0, 1),
+      levels = c(0, 1),
+      labels = c("2013", "2019")
+    ),
+    
+    # treatment
+    treatment = factor(
+      case_when(
+        county_name == "nimba" ~ 1,
+        county_name == "bong" ~ 1,
+        TRUE ~ 0
+      ),
+      levels = c(0, 1),
+      labels = c("reference", "treatment")
+    ),
+    
+    # age categories
+    age_cat = factor(
+      case_when(
+        v012 >= 15 & v012 <= 24 ~ "15 - 24",
+        v012 >= 25 & v012 <= 34 ~ "25 - 34",
+        v012 >= 35 ~ "35 - 49"
+      ),
+      levels = c("15 - 24", "25 - 34", "35 - 49")
+    ),
+    
+    # wife beating variable
+    wife_beating = factor(
+      case_when(
+        v744a == 1 | v744b == 1 | v744c == 1 | v744d == 1 | v744e == 1 ~ 1,
+        TRUE ~ 0
+      ),
+      levels = c(0, 1),
+      labels = c("no", "yes")
+    ),
+    
+    # education
+    education = factor(
+      case_when(
+        v106 == 0 ~ "no education",
+        v106 == 1 ~ "primary",
+        v106 >= 2 ~ "secondary or higher"
+      ),
+      levels = c("no education", "primary", "secondary or higher")
+    ),
+    
+    # marital status
+    marital_status = factor(
+      case_when(
+        v501 == 0 ~ "never in union",
+        v501 == 1 ~ "married",
+        v501 == 2 ~ "living with partner",
+        v501 == 3 ~ "widowed",
+        v501 >= 4 ~ "divorced or separated"
+      ),
+      levels = c("never in union", "married", "living with partner", "divorced or separated", "widowed")
+    ),
+    
+    # harmonize county names
+    county_name = case_when(
+      county_name == "River Cess" ~ "Rivercess",
+      TRUE ~ county_name
+    ),
+    
+    # Wealth
+    v190 = factor(
+      v190,
+      levels = 1:5,
+      labels = c("poorest", "poorer", "middle", "richer", "richest")
+    ),
+    
+    # Urban/Rural
+    v025 = factor(
+      v025,
+      levels = c(1, 2),
+      labels = c("urban", "rural")
+    ),
+    
+    # Region
+    v024 = factor(
+      v024,
+      levels = c(1, 2, 3, 4, 5),
+      labels = c("north western", "south central", "south eastern a", "south eastern b", "north central")
+    )
+  )
+
+# Add variable labels
+var_label(dhs_joined_treatment) <- list(
+  wife_beating = "Dep. Var.: Justification of Wife Beating",
+  education = "Highest Educational Level",
+  age_cat = "Age Categories",
+  v190 = "DHS Wealth Index",
+  marital_status = "Marital Status",
+  v025 = "Type of Place of Residence",
+  v024 = "Region",
+  county_name = "Counties",
+  treatment = "Gender Norm Activities in County (Treatment)",
+  time = "Wave"
+)
+
+```
+
+## Summary Statistics
+
+```{r}
+
+table1(~wife_beating + education + age_cat + marital_status + v190 + v025 + v024 + time + treatment  | treatment, data=dhs_joined_treatment)
+
+```
+
+# Create Survey Design Object
+
+```{r}
+dhs_design <- svydesign(
+  id = ~v021,          # Cluster (PSU)
+  strata = ~interaction(year, v022), 
+  weights = ~weight,
+  data = dhs_joined_treatment,
+  nest = TRUE
+)
+```
+
+## Interaction Model
+
+```{r Interaction 10.04.2025, dev='png'}
+MODEL04 <- glm(wife_beating ~ education + age_cat + marital_status + v190 + v025 + v024 + treatment:time, data=dhs_joined_treatment, family=binomial())
+tbl_regression(MODEL04, exponentiate = TRUE,
+               label = list(
+    education ~ "Highest Educational Level",
+    age_cat ~ "Age Categories",
+    marital_status ~ "Marital Status",
+    v190 ~ "DHS Wealth Index",
+    v025 ~ "Type of Place of Residence",
+    v024 ~ "Region",
+    "treatment:time" ~ "Gender Norm Activities : Wave"
+  ))
+
+
+```
+
+# Robustness Check: Model without region control
+
+```{r}
+MODEL06 <- glm(wife_beating ~ education + age_cat + marital_status + v190 + v025  + treatment:time, data=dhs_joined_treatment, family=binomial())
+tbl_regression(MODEL06, exponentiate = TRUE,
+               label = list(
+    education ~ "Highest Educational Level",
+    age_cat ~ "Age Categories",
+    marital_status ~ "Marital Status",
+    v190 ~ "DHS Wealth Index",
+    v025 ~ "Type of Place of Residence",
+    "treatment:time" ~ "Gender Norm Activities : Wave"
+  ))
+
+
+```
+
+```{r Interaction plot with predicted probabilities}
+interaction_plot <- sjPlot::plot_model(
+  MODEL04, 
+  type = "pred",
+  terms = c("time", "treatment"), 
+  dodge = 0.5
+  ) +
+  labs(
+    title = element_blank(),
+    x = "Survey Wave",
+    y = "Predicted Probability of Justifying Wife Beating",
+    color = "Treatment Status"
+  ) +
+  theme_sjplot2()+
+  coord_cartesian(xlim = c(2011, 2021)) + 
+  geom_text(aes(label = round(predicted, 2)), vjust = -0.5)
+
+ggsave("../Graphs and Tables/Interaction_Plot.png", interaction_plot)
+
+interaction_plot
+
+
+```
+
+# Data Visualization for Descriptive Analysis
+
+```{r Create weighed survey object fpr 2013 and 2019 with all counties}
+dhs_joined_all_counties <- dhs_joined %>%
+   filter(v744a <= 1, #wife beating -> exclude 8 ~ don't know
+         v744b <= 1,
+         v744c <= 1,
+         v744d <= 1,
+         v744e <= 1
+        ) %>%
+  mutate(time = as.factor(ifelse(year ==2013, 0, 1)),  #time variable 
+         treatment = as.factor(case_when(county_name == "bong" ~ 1,
+                               county_name == "nimba" ~ 1,
+                               TRUE ~ 0)),
+         wife_beating = case_when(v744a == 1 ~ 1,
+                                  v744b == 1 ~ 1,
+                                  v744c == 1 ~ 1,
+                                  v744d == 1 ~ 1,
+                                  v744e == 1 ~ 1,
+                                  TRUE ~ 0),
+         county_name = str_to_title(county_name),
+         county_name = case_when(county_name == "River Cess" ~ "Rivercess",
+                                 TRUE ~ county_name))
+  
+dhs_design_all_counties <- svydesign(
+  id = ~v021,
+  strata = ~interaction(year, v022),
+  weights = ~weight,
+  data = dhs_joined_all_counties,
+  nest = TRUE
+)
+```
+
+```{r Bar charts proportion of wife beating in 2013 and 2019}
+# Calculate weighed proprtions
+wife_beating_proportions_weighted <- svyby(
+  formula = ~v744a + v744b + v744c + v744d + v744e + wife_beating,
+  by = ~year,
+  design = dhs_design_all_counties,
+  FUN = svymean,
+  na.rm = TRUE,
+  keep.names = FALSE
+)
+
+# order of variables
+var_order <- c("v744e", "v744d", "v744a", "v744b", "v744c", "wife_beating")
+label_mapping <- c(
+  "v744e" = "Burns food",
+  "v744d" = "Refuses sex",
+  "v744a" = "Goes out without \n notifying",
+  "v744b" = "Neglects \n children",
+  "v744c" = "Argues with \n husband",
+  "wife_beating" = "Agreement to at \n least one reason \n (Dependent Variable)"
+)
+
+# Pivot: Proportions
+prop_long <- wife_beating_proportions_weighted %>%
+  select(year, all_of(var_order)) %>%
+  pivot_longer(
+    cols = -year,
+    names_to = "Variable",
+    values_to = "Proportion"
+  )
+
+# Pivot: SE
+se_long <- wife_beating_proportions_weighted %>%
+  select(year, starts_with("se.")) %>%
+  pivot_longer(
+    cols = -year,
+    names_to = "Variable",
+    values_to = "SE"
+  ) %>%
+  mutate(Variable = sub("se\\.", "", Variable))  # "se.v744a" -> "v744a"
+
+wife_beating_long <- left_join(prop_long, se_long, by = c("year", "Variable")) %>%
+  filter(Variable %in% var_order) %>%
+  mutate(
+    Proportion = Proportion * 100,
+    SE = SE * 100,
+    Variable = factor(Variable, levels = var_order, labels = label_mapping)
+  )
+
+
+
+
+# Bar chart
+bar_chart_wife_beating_weighted <- wife_beating_long %>% 
+  ggplot(aes(
+  x = Variable,
+  y = Proportion,
+  fill = as.factor(year)
+)) +
+  geom_col(position = position_dodge(width = 0.9), width = 0.8) +
+    geom_text(
+    aes(label = sprintf("%.1f%%", Proportion)),
+    position = position_dodge(width = 0.9),
+    vjust = -0.5,
+    size = 3
+  ) +
+  scale_fill_brewer(palette = "Set1", labels = c("2013", "2019")) +
+  labs(
+    x = "",
+    y = "Proportion (%)",
+    fill = "Year"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "top"
+  ) +
+  expand_limits(y = 50)
+
+ggsave("../Graphs and Tables/bar_chart_wife_beating_weighted.png", bar_chart_wife_beating_weighted)
+
+```
+
+#Data Transformation WB Maps
+
+```{r Map with justification of wife beating per county 2007 - data transformation}
+#Load 2007 data
+dhs_2007 <- read_dta("../Data/LB_2007_DHS_02132025_118_220630/LBIR51DT/LBIR51FL.DTA") %>%
+  filter(v744a <= 1, #wife beating -> exclude 8 ~ don't know
+         v744b <= 1,
+         v744c <= 1,
+         v744d <= 1,
+         v744e <= 1,
+        ) %>%
+  mutate(wife_beating = case_when(v744a == 1 ~ 1,
+                                  v744b == 1 ~ 1,
+                                  v744c == 1 ~ 1,
+                                  v744d == 1 ~ 1,
+                                  v744e == 1 ~ 1,
+                                  TRUE ~ 0), # wife beating index
+        county_name = as.character(as_factor(scty)),
+        county_name = str_to_title(county_name),
+         county_name = case_when(county_name == "River Cess" ~ "Rivercess",
+                                 county_name == "Rivergee" ~ "River Gee",
+                                 TRUE ~ county_name),
+         weight = v005 / 1000000)
+
+Var_Lab_2007 <- makeVlist(dhs_2007)
+
+options(survey.lonely.psu = "adjust")
+
+dhs_2007_design <- svydesign(
+  id = ~v021,
+  strata = ~v022,
+  weights = ~weight,
+  data = dhs_2007,
+  nest = TRUE
+)
+
+#Create df that shows the percentage of women justifying wife beating in each county
+WB_2007 <- dhs_2007_design %>%
+  as_survey() %>%
+  group_by(county_name) %>%
+  summarize(
+    Proportion = survey_mean(wife_beating * 100, na.rm = TRUE)
+  )
+ 
+
+#Load the Polygons data file
+Liberia_counties <- read_sf("../Data/liberia-with-regions_1470.geojson") %>%
+  st_transform(crs = 4326)
+
+#Join files
+WB_2007 <- left_join(Liberia_counties, WB_2007, by = c("name" = "county_name"))
+
+
+
+```
+
+```{r Map with justification of wife beating per county 2013 - data transformation}
+#Create df that shows the percentage of women justifying wife beating in each county
+WB_2013 <- dhs_design_all_counties %>%
+  as_survey() %>%
+  filter(year == 2013) %>%
+  group_by(county_name) %>%
+  summarize(
+    Proportion = survey_mean(wife_beating * 100, na.rm = TRUE)
+  )
+ 
+
+#Load the Polygons data file
+Liberia_counties <- read_sf("../Data/liberia-with-regions_1470.geojson") %>%
+  st_transform(crs = 4326)
+
+#Join files
+WB_2013 <- left_join(Liberia_counties, WB_2013, by = c("name" = "county_name"))
+
+```
+
+```{r Map with justification of wife beating per county 2019 - data transformation}
+#Create df that shows the percentage of women justifying wife beating in each county
+WB_2019 <- dhs_design_all_counties %>%
+  as_survey() %>%
+  filter(year == 2019) %>%
+  group_by(county_name) %>%
+  summarize(
+    Proportion = survey_mean(wife_beating * 100, na.rm = TRUE)
+  )
+ 
+#Join files
+WB_2019 <- left_join(Liberia_counties, WB_2019, by = c("name" = "county_name"))
+
+```
+
+#Maps Wife Beating across years
+
+```{r Prepare Common Label and Color Settings for Maps}
+#Object with coordinates of center of each county -> necessary for good positioning of labels
+county_centroids <- WB_2013 %>% 
+  st_centroid() %>% 
+  mutate(
+    lon = st_coordinates(.)[,1],
+    lat = st_coordinates(.)[,2]
+  )
+#Manipulate coordinates to avoid overlapping of labels
+
+new_lat_margibi <- 6.7
+new_lat_maryland <- 4.65
+
+margibi_lon <- county_centroids[county_centroids$name == "Margibi", "lon"]
+maryland_lon <- county_centroids[county_centroids$name == "Maryland", "lon"]
+
+change_geometry <- function(name, new_lat) {
+  idx <- which(county_centroids$name == name)
+
+  lon <- county_centroids$lon[idx]
+  new_geom <- st_sfc(st_point(c(lon, new_lat)), crs = st_crs(county_centroids))
+
+  county_centroids$geometry[idx] <<- new_geom
+  county_centroids$lat[idx] <<- new_lat
+}
+
+change_geometry("Margibi", new_lat_margibi)
+change_geometry("Maryland", new_lat_maryland)
+
+#Create common breaks and limits to have equal color scales
+mybreaks <- c(30,40,50,60,70,80, 90)
+
+min_value <- min(c(WB_2007$Proportion, WB_2013$Proportion, WB_2019$Proportion))
+max_value <- max(c(WB_2007$Proportion, WB_2013$Proportion, WB_2019$Proportion))
+
+```
+
+```{r Function for unified map layout}
+maps <- function(WB_df, year) {
+  map <- WB_df %>%
+  ggplot() +
+  geom_sf(aes(fill = Proportion), linewidth = 0.05, alpha = 0.8) +
+  scale_fill_viridis_c(trans = "log", 
+                       name = "% of respondents agreeing",
+                       breaks = mybreaks, 
+                       limits = c(min_value, max_value),
+                       guide = guide_colorbar(
+                         direction = "horizontal",
+                         barwidth = unit(5, "cm"),
+                         barheight = unit(0.3, "cm"),
+                         title.position = "top",
+                         label.position = "bottom",
+                         ticks.colour = "black")
+  ) +
+   geom_sf_text(data = county_centroids, aes(lon, lat, label = name), 
+               size = 3, color = "black", check_overlap = FALSE) +
+  theme_void() +
+  #ggtitle(year) +
+  theme(
+    text = element_text(color = "#22211d"),
+    plot.margin = margin(t = 0, r = 0, b = 0, l = 0, unit = "cm"),
+    #plot.background = element_rect(fill = "#f5f5f2", color = NA),
+    #panel.background = element_rect(fill = "#f5f5f2", color = NA),
+    plot.title = element_text(size = 15, 
+                              hjust = 0.5, 
+                              color = "#4e4d47",
+                              margin = margin(b = 4)),
+    legend.title = element_text(size = 8),
+    legend.title.position = "top",
+    legend.text = element_text(size = 8),
+    legend.position = "bottom")+
+    coord_sf(clip = "off")
+
+ggsave(filename = paste0("../Graphs and Tables/WB_", year, "_map.png"))
+  return(map)
+}
+```
+
+```{r Map with justification of wife beating per county - cloropleth map 2007}
+
+WB_2007_map <- maps(WB_2007, 2007)
+
+WB_2007_map
+
+```
+
+```{r Map with justification of wife beating per county - cloropleth map 2013}
+WB_2013_map <- maps(WB_2013, 2013)
+
+WB_2013_map
+```
+
+```{r}
+
+WB_2019_map <- maps(WB_2019, 2019)
+
+WB_2019_map
+```
+
+```{r Unify Wife beating maps in one plot}
+title_2007 <- ggplot() + 
+  theme_void() +
+  annotate("text", x = 0.5, y = 0.5, label = "2007", size = 6) +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1))
+
+title_2013 <- ggplot() + 
+  theme_void() +
+  annotate("text", x = 0.5, y = 0.5, label = "2013", size = 6) +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1))
+
+title_2019 <- ggplot() + 
+  theme_void() +
+  annotate("text", x = 0.5, y = 0.5, label = "2019", size = 6) +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1))
+
+
+
+WB_maps_combined <- title_2007 + WB_2007_map + title_2013 + WB_2013_map  + title_2019 + WB_2019_map +
+  plot_layout(guides = 'collect',
+              ncol = 2,
+              nrow = 3,
+              heights = c(1,1,1),
+              widths = c(1,4)) &
+  theme(legend.position = "bottom")
+
+WB_maps_combined
+
+ggsave("../Graphs and Tables/WB_maps_combined.png", WB_maps_combined,
+       width = 12,       # in cm (z.B. Kartenbreite + etwas Luft)
+       height = 25,     # 3x 5cm Karten + 2cm Legende
+       units = "cm",
+       dpi = 300)
+
+```
+
+```{r Line Plot with wife beating across time and counties - data transformation}
+WB_2007_small <- WB_2007 %>%
+  select(name, Proportion) %>%
+  mutate(year = 2007)
+
+WB_2013_small <- WB_2013 %>%
+  select(name, Proportion) %>%
+  mutate(year = 2013)
+
+WB_2019_small <- WB_2019 %>%
+  select(name, Proportion) %>%
+  mutate(year = 2019)
+
+WB_all_years <- bind_rows(WB_2007_small, WB_2013_small, WB_2019_small) %>%
+  mutate(treatment_status = case_when(name == "Bomi" ~ "Treatment",
+                                      name == "Nimba" ~ "Treatment",
+                                      TRUE ~ "Reference"))
+
+```
+
+```{r Line Plot with wife beating across time and counties}
+
+WB_all_years %>%
+  ggplot(aes(x=year, y= Proportion, group = name, color = name)) +
+  geom_line() +
+  geom_point() +
+  scale_color_viridis(discrete = TRUE) +
+  theme_minimal()
+
+```
+
+```{r Line Plot with wife beating across time and treatment status}
+WB_all_years %>%
+  ggplot(aes(x=year, y= Proportion, group = name, color = treatment_status)) +
+  geom_line() +
+  geom_point() +
+  ggtitle("Justification of Wife Beating in 2007, 2013 and 2019 across Liberian Counties\nby Treatment Status")
+  #scale_color_viridis(discrete = TRUE) +
+  theme_minimal()
+
+```
+
+# 2019 WB Map for Poster
+
+```{r}
+mybreaks2 <- c(30, 40, 50, 60)
+
+min_value2 <- min(WB_2019_small$Proportion, na.rm = TRUE)
+max_value2 <- max(WB_2019_small$Proportion, na.rm = TRUE)
+
+map_poster <- WB_2019_small %>%
+  ggplot() +
+  geom_sf(aes(fill = Proportion), linewidth = 0.05, alpha = 0.8) +
+  scale_fill_viridis_c(name = "% of respondents agreeing",
+                       #breaks = mybreaks2, 
+                       limits = c(min_value2, max_value2),
+                       guide = guide_colorbar(
+                         direction = "horizontal",
+                         barwidth = unit(5, "cm"),
+                         barheight = unit(0.3, "cm"),
+                         title.position = "top",
+                         label.position = "bottom",
+                         ticks.colour = "black")
+  ) +
+   geom_sf_text(data = county_centroids, aes(lon, lat, label = name), 
+               size = 3, color = "black", check_overlap = FALSE) +
+  theme_void() +
+  #ggtitle(year) +
+  theme(
+    text = element_text(color = "#22211d"),
+    plot.margin = margin(t = 0, r = 0, b = 0, l = 0, unit = "cm"),
+    #plot.background = element_rect(fill = "#f5f5f2", color = NA),
+    #panel.background = element_rect(fill = "#f5f5f2", color = NA),
+    plot.title = element_text(size = 15, 
+                              hjust = 0.5, 
+                              color = "#4e4d47",
+                              margin = margin(b = 4)),
+    legend.title = element_text(size = 8),
+    legend.title.position = "top",
+    legend.text = element_text(size = 8),
+    legend.position = "bottom")+
+    coord_sf(clip = "off")
+
+ggsave(filename = ("../Graphs and Tables/WB_2019_map_poster.png"))
+```
+
+```{r}
+svyCreateTableOne(
+  vars = c("wife_beating", "education", "age_cat", "marital_status", "v190", "v025", "v024", "time", "treatment"),
+  strata = "treatment", 
+  data = dhs_design
+)
+```
+
+#Weighted Summary Statistics
+
+```{r}
+summary_statistics_weighted <- svyCreateTableOne(
+  vars = c("wife_beating", "education", "age_cat", "marital_status", "v190", "v025", "v024", "time", "treatment"),
+  strata = "treatment", 
+  data = dhs_design
+)
+
+weights_summary_table_df <- print(summary_statistics_weighted, 
+                          quote = FALSE, 
+                          noSpaces = TRUE, 
+                          printToggle = FALSE) %>% 
+  as.data.frame() %>%
+  rownames_to_column(var = "Variable")
+
+weights_summary_table_df %>%
+  flextable() %>%
+  autofit()
+```

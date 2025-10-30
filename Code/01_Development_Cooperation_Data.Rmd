@@ -1,0 +1,209 @@
+---
+title: "01 Development Cooperation Data"
+author: "Lisa Rabba"
+date: "2025-10-30"
+output:
+  html_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE, warning=FALSE)
+```
+
+### Load Packages
+
+```{r}
+pacman::p_load(tidyverse, haven, writexl, table1, gtsummary, car, labelled, ggplot2, knitr, kableExtra, gt, htmlwidgets, formattable, sf, patchwork, sjPlot, viridis, ggrepel, survey, tableone, marginaleffects, magick, svrep,srvyr, flextable)
+
+#Function that provides an overview of variable names in a dataset
+makeVlist <- function(x) {
+  labels <- sapply(x, function(x) attr(x, "label"))
+  tibble(name = names(labels), label = labels)
+}
+```
+
+# Development Cooperation Data
+
+## Identify relevant development cooperation projects
+
+First step of the analysis: Use a data set from the International Aid Transparency Initiative to identify projects (rows) that aim to contribute to female empowerment. The following section illustrates how I experimented with different inclusion criteria, each of them being expressed through a true/false column.
+
+#### Load IATI data set with foreign aid activities in Liberia between 1960 and 2029
+
+```{r}
+#load
+iati_all_1960_2029 <- read_csv("../Data/iati_all_1960_2029.csv") # 22991 rows
+
+#remove dublicate rows
+iati_all_1960_2029 <- unique(iati_all_1960_2029) # 3661 unique activities
+```
+
+
+#### 1. Gender Equality SDG
+
+```{r}
+#Projects listed on IATI d-portal when filtered for SDG goal "Gender equality"
+iati_sdg_ge_1960_2029 <- read_csv("C:/Users/lisar/iCloudDrive/2025 SoSe/Master's Thesis/Data Analysis/Data/iati_sdg_ge_1960-2029.csv")
+
+#Eliminate dublicate rows
+iati_sdg_ge_1960_2029 <- unique(iati_sdg_ge_1960_2029) # 126 unique activities
+
+#Create new row in the iati_all df that is "true" when the same row exists in the iati_sdg_ge df and "false" otherwise
+iati_all_1960_2029$sdg_ge <- do.call(paste0, iati_all_1960_2029) %in% do.call(paste0, iati_sdg_ge_1960_2029)
+
+#Check result
+table(iati_all_1960_2029$sdg_ge) # 126 rows are marked as true -> seems correct
+
+```
+
+
+#### 2. DAC Sector Codes "Women's rights organisations and movements, and government insitutions", "Ending Violence Against Women and Girls", or "Women's equality organizations and institutions"
+
+```{r}
+iati_all_1960_2029 <- iati_all_1960_2029 %>%
+  mutate(sector_code_ge = case_when(
+    sector_code == "Women's rights organisations and movements, and government institutions" ~ TRUE,
+    sector_code == "Ending violence against women and girls" ~ TRUE,
+    sector_code == "Women's equality organisations and institutions" ~ TRUE,
+    is.na(sector_code) ~ FALSE,
+    TRUE ~ FALSE))
+
+#Check result
+#table(iati_all_1960_2029$sector_code_ge, useNA = "ifany") #82 activities are labelled with one of the three sector codes
+#table(iati_all_1960_2029$sector_code) # 25 activities with "ending violence..." + 57 with "women's rights organisations..." = 82 -> seems correct
+```
+
+
+#### 3. Keyword search of project titles and descriptions (selection of keywords based on Berlin et al. 2023)
+
+```{r}
+#Create regex pattern that searches for one or more of the keywords
+keywords_ge <- c("women", "girl", "bride", "maternal", "gender", "genital")
+
+keyword_pattern_ge <- paste(keywords_ge, collapse = "|")
+
+#search project title and description for keywords (ignoring upper and lower case) and create new column that markes projects with keywords
+iati_all_1960_2029$keywords_ge <- apply(iati_all_1960_2029[c("title", "description")], 1, function(row) {
+  any(grepl(keyword_pattern_ge, row, ignore.case = TRUE))
+})
+
+table(iati_all_1960_2029$keywords_ge)
+```
+
+#### 4. Summary column 
+
+Column is true if any of the previous three columns (SDG Goal Gender Equality, DAC Sector Codes, Key Word Search) are true
+
+```{r}
+iati_all_1960_2029 <- iati_all_1960_2029 %>%
+  mutate(treatment = ifelse(sector_code_ge == TRUE |
+                                   sdg_ge ==TRUE |
+                              keywords_ge == TRUE, 
+                            TRUE, FALSE))
+
+#Check result 
+table(iati_all_1960_2029$treatment) # 1316 projects count as treatment
+```
+
+#### 5. Qualitative Coding Approach
+
+After a review of the quantitative approaches (above) and a refinement of how "feminist development cooperation" shall be defined in the thesis, a qualitative coding approach is explored. (A detailed codebook can be found in the thesis' appendix.) For this purpose, I exported the data into Excel and then reimported it to continue the statistical analysis.
+
+```{r}
+#Create a subset with sector codes that are expected to be relevant for manual coding in excel
+iati_gender_norms_1960_2029 <- iati_all_1960_2029 %>%
+  filter(sector_code == "Social Protection" |
+           sector_code == "Social mitigation of HIV/AIDS" |
+           sector_code == "Social services (incl youth development and women+ children)" |
+           sector_code == "Basic life skills for adults" |
+           sector_code == "Basic life skills for youth" |
+           sector_code == "Reproductive health care" |
+           sector_code == "Family planning" |
+           sector_code == "Promotion of mental health and well-being"|
+           sector_code == "STD control including HIV/AIDS" |
+           sector_code == "Democratic participation and civil society" |
+           sector_code == "Human rights" |
+           sector_code == "Women's rights organisations and movements, and government institutions" |
+           sector_code == "Ending violence against women and girls" |
+           sector_code == "Civilian peace-building, conflict prevention and resolution" |
+           sector_code == "Immediate post-emergency reconstruction and rehabilitation"
+           )
+write_xlsx(iati_gender_norms_1960_2029, "../Data/iati_gender_norms_1960_2029.xlsx")
+```
+
+Inspection of the first results of qualitative coding.
+```{r}
+iati_gender_norms_1960_2029_codiert <- readxl::read_excel("../Data/iati_gender_norms_1960_2029_codiert.xlsx")
+
+
+#Check activity distribution across counties
+table(iati_gender_norms_1960_2029_codiert$gender_norms, iati_gender_norms_1960_2029_codiert$county) 
+
+#Activity distribution across counties and before the survey
+table(subset(iati_gender_norms_1960_2029_codiert, day_start < "2019-10-01")$gender_norms, 
+      subset(iati_gender_norms_1960_2029_codiert, day_start < "2019-10-01")$county, useNA = "ifany")
+
+
+#Activity distribution across counties and before the survey
+table(subset(iati_gender_norms_1960_2029_codiert, day_start >= "2019-10-01")$gender_norms, 
+      subset(iati_gender_norms_1960_2029_codiert, day_start >= "2019-10-01")$county, useNA = "ifany")
+```
+
+Based on the results, I decided to code all the remaining projects as well.
+```{r}
+#Create a new version of the dataset with both the coded and the uncoded rows
+iati_all_gender_norms_1960_2029_joined <- left_join(iati_all_1960_2029, iati_gender_norms_1960_2029_codiert)
+
+table(iati_all_gender_norms_1960_2029_joined$gender_norms, useNA = "ifany")
+
+#Export for qualitative coding
+write_xlsx(iati_all_gender_norms_1960_2029_joined, "../Data/iati_all_gender_norms_1960_2029_joined.xlsx")
+
+#Reimport
+iati_all_gender_norms_1960_2029_joined_2 <- readxl::read_excel("../Data/iati_all_gender_norms_1960_2029_joined_codiert.xlsx")
+```
+
+Inspect the final data set and define treatment status of counties based on the geographic and time distribution of activities. Counties will be considered "treated" if activities have increased between the two survey rounds. Counties where the activity stayed the same will be considered as controls. Counties with a decrease will be excluded from the analysis.
+```{r}
+# Activity distribution across counties (TRUE = Gender Norms) before the 2013 survey -> how did things look like before my "intervention"?
+table(subset(iati_all_gender_norms_1960_2029_joined_2, day_start > "2008-07-20" & day_start < "2013-07-20")$gender_norms, 
+      subset(iati_all_gender_norms_1960_2029_joined_2, day_start > "2008-07-20" & day_start < "2013-07-20")$county, useNA = "ifany")
+
+#Activity distribution across counties between the two survey rounds
+table(subset(iati_all_gender_norms_1960_2029_joined_2, day_start > "2013-07-20" & day_start < "2019-09-19")$gender_norms, 
+      subset(iati_all_gender_norms_1960_2029_joined_2, day_start > "2013-07-20" & day_start < "2019-09-19")$county, useNA = "ifany")
+
+#Bong, Maryland, Montserrado, Nimba and River Gee show increases -> inspect the actual projects that lead to that before making decision on treatment status
+iati_all_gender_norms_1960_2029_joined_2 %>%
+  filter(gender_norms == TRUE,
+         county == "Bong",
+         day_start > "2013-07-20" & day_start < "2019-09-19")
+
+iati_all_gender_norms_1960_2029_joined_2 %>%
+  filter(gender_norms == TRUE,
+         county == "Maryland",
+         day_start > "2013-07-20" & day_start < "2019-09-19")
+
+iati_all_gender_norms_1960_2029_joined_2 %>%
+  filter(gender_norms == TRUE,
+         county == "Montserrado",
+         day_start > "2013-07-20" & day_start < "2019-09-19") 
+
+iati_all_gender_norms_1960_2029_joined_2 %>%
+  filter(gender_norms == TRUE,
+         county == "Nimba",
+         day_start > "2013-07-20" & day_start < "2019-09-19")
+
+iati_all_gender_norms_1960_2029_joined_2 %>%
+  filter(gender_norms == TRUE,
+         county == "River Gee",
+         day_start > "2013-07-20" & day_start < "2019-09-19")
+
+unique(iati_all_gender_norms_1960_2029_joined_2$reporting)
+```
+
+Conclusion: Bong, Montserrado and Nimba will receive treatment status. Maryland and River Ghee will be counted to the control group because an increase from 1 to 0 projects in the span of 6 years does not seem enough to plausibly consider the entire county population as "treated" with gender norm interventions.Grand Bassa and Margibi will be excluded because they show a decrease.
+
+
+
