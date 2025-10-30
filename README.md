@@ -1,4 +1,4 @@
-# Feminist Development Cooperation – Data Pipeline (Master Thesis)
+# Masters Thesis Project on Feminist Development Cooperation in Liberia
 
 This repository contains the data cleaning and analysis code for my thesis 
 examining whether feminist development cooperation projects (specifically
@@ -8,12 +8,12 @@ available via the Hertie School Library.
 
 ## Structure
 ```
-thesis-pipeline/
+masters-thesis-feminist-devco-liberia/
 ├── Data/              # not included
 
-├── Code/               # Analysis scripts
-│   ├── 01_Development_Cooperation_Data.Rmd
-│   ├── 02_DHS_Data_Analysis.Rmd
+├── Code/               
+│   ├── 01_Development_Cooperation_Data.Rmd # cleans and analyzes IATI data on development cooperation in Liberia
+│   ├── 02_DHS_Data_Analysis.Rmd # cleans and analyzes DHS
 ├── Graphs and Tables/
 
 ```
@@ -22,6 +22,6 @@ thesis-pipeline/
 ## Data Access
 
 - Demographic and Health Survey Data (DHS) data requires registration at 
-https://dhsprogram.com/
+https://dhsprogram.com/. The thesis uses the individual recodes of the Liberian survey from the years 2007, 2013 and 2019
 - IATI project data downloaded from https://d-portal.org/ctrack.html#view=search
 
